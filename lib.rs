@@ -8,6 +8,7 @@ use anchor_lang::{
     },
     system_program,
 };
+
 use ephemeral_vrf_sdk::anchor::vrf;
 use ephemeral_vrf_sdk::instructions::{create_request_randomness_ix, RequestRandomnessParams};
 use ephemeral_vrf_sdk::types::SerializableAccountMeta;
@@ -20,8 +21,23 @@ use anchor_spl::{
     token_interface::{Mint, TokenAccount, TokenInterface, transfer_checked, TransferChecked, SyncNative, sync_native},
 };
 
+/*
+use light_sdk::{
+    account::LightAccount,
+    address::v1::derive_address,
+    cpi::{accounts::CompressionCpiAccounts, verify::verify_compressed_account_infos},
+    error::LightSdkError,
+    instruction::{account_meta::CompressedAccountMeta, instruction_data::LightInstructionData},
+    NewAddressParamsPacked,
+};
 
-declare_id!("E2UwwZmxGwDdx1CZywPsLN2HPu27nLqN7chWBT1x8P2b");
+use light_account_checks::discriminator::Discriminator;
+use light_sdk_macros::{LightDiscriminator, LightHasher};
+
+*/
+
+
+declare_id!("3n5vZatE8n5v6xzvAVNg8L2iY6yB7FYGLzPWajQfhD4X");
 
 
 #[ephemeral]
@@ -54,6 +70,66 @@ pub mod blackjack {
         Ok(())
     }
 
+    /*
+    pub fn create_light_deck<'info>(
+        ctx: Context<'_, '_, '_, 'info, CreateLightDeck<'info>>,
+        light_ix_data: LightInstructionData,
+        output_merkle_tree_index: u8,
+    ) -> Result<()> {
+        let program_id = crate::ID.into();
+
+        let light_cpi_accounts = CompressionCpiAccounts::new(
+            ctx.accounts.signer.as_ref(),
+            ctx.remaining_accounts,
+            crate::ID,
+        ).map_err(ProgramError::from)?;
+
+        let address_merkle_context = light_ix_data
+            .new_addresses
+            .ok_or(LightSdkError::ExpectedAddressMerkleContext)
+            .map_err(ProgramError::from)?[0];
+
+        let (address, address_seed) = derive_address(
+            &[b"DECK", ctx.accounts.blackjack.key().as_ref()],
+            &light_cpi_accounts.tree_accounts()
+                [address_merkle_context.address_merkle_tree_pubkey_index as usize]
+                .key(),
+            &crate::ID,
+        );
+
+        let new_address_params = NewAddressParamsPacked {
+            seed: address_seed,
+            address_queue_account_index: address_merkle_context.address_queue_pubkey_index,
+            address_merkle_tree_root_index: address_merkle_context.root_index,
+            address_merkle_tree_account_index: address_merkle_context
+                .address_merkle_tree_pubkey_index,
+        };
+
+        let mut deck = LightAccount::<'_, Deck2>::new_init(
+            &program_id,
+            Some(address),
+            output_merkle_tree_index,
+        );
+
+        //deck.cards = [0; 52];
+        deck.blackjack = ctx.accounts.blackjack.key();
+        deck.drawn = 0;
+
+        verify_compressed_account_infos(
+            &light_cpi_accounts,
+            light_ix_data.proof,
+            &[deck.to_account_info().unwrap()],
+            Some(vec![new_address_params]),
+            None,
+            false,
+            None,
+        )
+        .map_err(ProgramError::from)?;
+
+
+        Ok(())
+    }   
+    */
 
 
     pub fn join_blackjack(
@@ -74,6 +150,52 @@ pub mod blackjack {
         blackjack.dealer_card_5 = 0;
         blackjack.dealer_card_6 = 0;
 
+
+        Ok(())
+    }
+
+
+    //only call after joining before anteing.
+    pub fn shuffle_deck(ctx: Context<DoShuffleDeckCtx>, client_seed: u8) -> Result<()> {
+        let blackjack = &ctx.accounts.blackjack;
+
+        require!(
+            blackjack.active_hands == 0,
+            CustomError::Unauthorized
+        );
+
+        msg!("Requesting randomness...");
+        let ix = create_request_randomness_ix(RequestRandomnessParams {
+            payer: ctx.accounts.signer.key(),
+            oracle_queue: ctx.accounts.oracle_queue.key(),
+            callback_program_id: ID,
+            callback_discriminator: instruction::CallbackShuffleDeck::DISCRIMINATOR.to_vec(),
+            caller_seed: [client_seed; 32],
+            // Specify any account that is required by the callback
+            accounts_metas: Some(vec![
+                SerializableAccountMeta {
+                    pubkey: ctx.accounts.deck.key(),
+                    is_signer: false,
+                    is_writable: true,
+                }
+            ]),
+            ..Default::default()
+        });
+        ctx.accounts
+            .invoke_signed_vrf(&ctx.accounts.signer.to_account_info(), &ix)?;
+        Ok(())
+    }
+  
+    pub fn callback_shuffle_deck(
+        ctx: Context<CallbackShuffleDeckCtx>,
+        randomness: [u8; 32],
+    ) -> Result<()> {
+        let deck = &mut ctx.accounts.deck;
+        
+        // Use the helper function to get a shuffled deck
+        let shuffled = shuffled_deck_from_seed(randomness);
+        deck.cards.copy_from_slice(&shuffled);
+        deck.drawn = 0;
 
         Ok(())
     }
@@ -153,13 +275,11 @@ pub mod blackjack {
     }
     
 
-
     //delegate new hand and deck and blackjack
     pub fn ante_blackjack( // if blackjack, stand automatically, will pay 1.5x when finishing turn | if dealer's first card is ACE, give players an option for insurance, if dealer's first card is ace / face card, do a random roll to see if its blackjack or not. if it is, the hand is stood automatically, and the player can only do next_turn, which will take the money, or give back the original bet if player has blackjack, or give some back because of the insurance bet.
         ctx: Context<AnteBlackJack>,
         hand_id: u8,
         player_bet: u64,
-        custom_deck: Option<[u8; 52]>,
     ) -> Result<()> {
 
         require!(
@@ -197,16 +317,14 @@ pub mod blackjack {
 
         let deck = &mut ctx.accounts.deck;
 
-        // Use custom deck if provided, otherwise generate random deck
-        if let Some(custom) = custom_deck {
-            deck.cards.copy_from_slice(&custom);
-        } else {
-            let clock = Clock::get()?;
-            let seed = keccak::hash(&clock.unix_timestamp.to_le_bytes()).0;
-            let shuffled = shuffled_deck_from_seed(seed);
-            deck.cards.copy_from_slice(&shuffled);
-        }
+        /*
+        let clock = Clock::get()?;
+        let seed = keccak::hash(&clock.unix_timestamp.to_le_bytes()).0;
+        let shuffled = shuffled_deck_from_seed(seed);
+        deck.cards.copy_from_slice(&shuffled);
         deck.drawn = 0;
+        */
+
 
         let card_1 = deck.cards[deck.drawn as usize];
         deck.drawn += 1;
@@ -249,19 +367,9 @@ pub mod blackjack {
         }
 
 
-        let card_4 = deck.cards[deck.drawn as usize];
-        let val_4 = get_card_value(card_4, true);
-
         if val_3 == 11 {
             ctx.accounts.blackjack_hand.state = 1; //insurance state
         }
-
-        if val_3 == 10 && val_4 == 11 {
-            blackjack.dealer_card_2 = card_4;
-            ctx.accounts.blackjack_hand.state = 3;
-        }
-
-
 
         Ok(())
     }
@@ -275,9 +383,6 @@ pub mod blackjack {
         let deck = &ctx.accounts.deck;
 
         require!(deck.drawn < 52, CustomError::Unauthorized);
-
-        let card_4 = deck.cards[deck.drawn as usize];
-        let val_4 = get_card_value(card_4, true);
 
         {
             let blackjack_hand = &mut ctx.accounts.blackjack_hand;
@@ -305,13 +410,7 @@ pub mod blackjack {
                 blackjack_hand.insured = true;
             }
 
-            if val_4 == 10 {
-                blackjack_hand.state = 3;
-
-                //blackjack.dealer_card_2 = card_4;   TEMPORARY SOLUTION, IF WE END UP ALLOWING MULTIPLE BETS AT ONCE, CANT DO THIS BECAUSE THE NEXT CARD WILL ALWAYS BE DEALER_CARD_2 WHEN THERES ONLY ONE HAND IN PLAY.
-            } else {
-                blackjack_hand.state = 0;
-            }
+            blackjack_hand.state = 0;
         }
 
         /*
@@ -603,7 +702,6 @@ pub mod blackjack {
     pub fn dealer_turn( // goes through each blackjack hand with a remaining account, make sure all hands have been stood or busted. sees which lost and which lost, pays out or not, deletes all the blackjack hand instances make blackjack.active_hands = 0
         ctx: Context<DealerTurn>,
     ) -> Result<()> {
-
         {
             let blackjack = &mut ctx.accounts.blackjack;
             let deck = &mut ctx.accounts.deck;
@@ -639,23 +737,24 @@ pub mod blackjack {
             while dealer_cards.len() < 6 {
                 // Calculate total and count aces
                 dealer_total = 0;
-                let mut ace_count = 0;
 
+                let mut ace_used_as_eleven = false;
                 for card in &dealer_cards {
-                    let val = get_card_value(*card, false);
-                    if val == 1 {
-                        ace_count += 1;
+                    let mut val = get_card_value(*card, false);
+                    if val == 1 && !ace_used_as_eleven {
+                        val = 11;
+                        ace_used_as_eleven = true;
                     }
                     dealer_total += val;
                     
                 }
 
-                if ace_count > 0 && dealer_total + 10 <= 21 {
-                    dealer_total += 10;
+                if dealer_total > 21 && ace_used_as_eleven {
+                    dealer_total -= 10;
                 }
 
                 // Dealer stands on hard 17+, hits on soft 17
-                if dealer_total > 17 || (dealer_total == 17 && ace_count == 0) {
+                if dealer_total > 17 || (dealer_total == 17 && !ace_used_as_eleven) {
                     break;
                 }
 
@@ -691,9 +790,7 @@ pub mod blackjack {
                     CustomError::Unauthorized
                 );
 
-
-
-                let mut payout = 0;
+                let mut payout: u64 = 0;
             
                 if blackjack_hand_instance.state != 2 { // Not busted
                     let cards = [
@@ -711,15 +808,18 @@ pub mod blackjack {
             
                     let mut ace_used_as_eleven = false;
                     let mut total: u8 = 0;
+
+                    
             
                     for &card in cards.iter() {
-                        if card == 1 && !ace_used_as_eleven {
-                            total += get_card_value(card, true);
+                        let mut val = get_card_value(card, false);
+                        if val == 1 && !ace_used_as_eleven {
+                            val = 11;
                             ace_used_as_eleven = true;
-                        } else {
-                            total += get_card_value(card, false);
                         }
+                        total += val;
                     }
+
             
                     if total > 21 && ace_used_as_eleven {
                         total -= 10;
@@ -735,12 +835,13 @@ pub mod blackjack {
                                 payout += blackjack_hand_instance.current_bet * 2;
                             }
                         }
-            
-                        if total == 21 && blackjack_hand_instance.insured {
-                            payout += blackjack_hand_instance.current_bet / 2;
-                        }
                     }
                 }
+
+                if dealer_total == 21 && blackjack_hand_instance.insured {
+                    payout += blackjack_hand_instance.current_bet * 3 / 2;
+                }
+
                 total_owed += payout;
             }
             
@@ -863,6 +964,44 @@ fn get_card_value(card_id: u8, ace_high: bool) -> u8 {
     }
 }
 
+#[vrf]
+#[derive(Accounts)]
+pub struct DoShuffleDeckCtx<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"BLACKJACK", signer.key().as_ref()],
+        bump
+    )]
+    pub blackjack: Account<'info, BlackJack>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = 8 + std::mem::size_of::<Deck>(), // 8 for discriminator
+        seeds = [b"DECK", blackjack.key().as_ref()],
+        bump
+    )]
+    pub deck: Account<'info, Deck>,
+
+    /// CHECK: The oracle queue
+    #[account(mut, address = ephemeral_vrf_sdk::consts::DEFAULT_QUEUE)]
+    pub oracle_queue: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CallbackShuffleDeckCtx<'info> {
+    /// This check ensure that the vrf_program_identity (which is a PDA) is a singer
+    /// enforcing the callback is executed by the VRF program trough CPI
+    #[account(address = ephemeral_vrf_sdk::consts::VRF_PROGRAM_IDENTITY)]
+    pub vrf_program_identity: Signer<'info>,
+
+    #[account(mut)]
+    pub deck: Account<'info, Deck>,
+}
+
 #[derive(Accounts)]
 pub struct InitializeTreasuries<'info> {
     #[account(mut)]
@@ -981,14 +1120,11 @@ pub struct AnteBlackJack<'info> {
     pub blackjack: Account<'info, BlackJack>,
 
     #[account(
-        init,
-        payer = signer,
-        space = 8 + std::mem::size_of::<Deck>(), // 8 for discriminator
+        mut,
         seeds = [b"DECK", blackjack.key().as_ref()],
         bump
     )]
     pub deck: Account<'info, Deck>,
-
 
     #[account(
         init,
@@ -998,7 +1134,6 @@ pub struct AnteBlackJack<'info> {
         bump
     )]
     pub blackjack_hand: Account<'info, BlackJackHand>,
-
 
     #[account(
         mut,
@@ -1045,14 +1180,12 @@ pub struct InsuranceBlackJack<'info> {
     )]
     pub deck: Account<'info, Deck>,
 
-
     #[account(
         mut,
         seeds = [b"BLACKJACKHAND", blackjack.key().as_ref(), &[hand_id]],
         bump
     )]
     pub blackjack_hand: Account<'info, BlackJackHand>,
-
 
     #[account(
         mut,
@@ -1075,7 +1208,6 @@ pub struct InsuranceBlackJack<'info> {
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub associated_token_program: Program<'info, AssociatedToken>,
-
 }
 
 
@@ -1293,6 +1425,24 @@ pub struct CommitBlackJack<'info> {
 }
 
 
+#[derive(Accounts)]
+pub struct CreateLightDeck<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    
+    #[account(
+        mut,
+        seeds = [b"BLACKJACK", signer.key().as_ref()],
+        bump
+    )]
+    pub blackjack: Account<'info, BlackJack>,
+    
+
+    pub system_program: Program<'info, System>,
+}
+
+
 #[account]
 #[derive(InitSpace)]
 pub struct BlackJackHand {
@@ -1353,3 +1503,15 @@ pub struct Deck {
     pub drawn: u8,            // Number of cards already drawn (0 initially)
     pub bump: u8,             // For PDA
 }
+
+/*
+#[derive(
+    Clone, Debug, Default, AnchorDeserialize, AnchorSerialize, LightHasher, LightDiscriminator,
+)]
+pub struct Deck2 {
+    #[hash]
+    pub blackjack : Pubkey,
+    //pub cards: [u8; 52],      // The shuffled cards (1..=52)
+    pub drawn: u8,            // Number of cards already drawn (0 initially)
+}
+*/
