@@ -37,7 +37,7 @@ use light_sdk_macros::{LightDiscriminator, LightHasher};
 */
 
 
-declare_id!("3n5vZatE8n5v6xzvAVNg8L2iY6yB7FYGLzPWajQfhD4X");
+declare_id!("Bp3EKTavjkMo6uLHgvnbF6VeL8xWs4uA6tNvJxndRrr");
 
 
 #[ephemeral]
@@ -52,6 +52,8 @@ pub mod blackjack {
     pub const FEE_PERCENTAGE: u8 = 100; // divide by 100 so 1%
 
     pub const SOLANA_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
+
+    pub const TREASURY_SEED: &[u8] = b"2e6d1f85819918f17a2847743e4fb707";
 
     pub fn init_treasuries(
         ctx: Context<InitializeTreasuries>,
@@ -1025,7 +1027,7 @@ pub struct InitializeTreasuries<'info> {
 
     #[account(
         init,
-        seeds = [b"TOKEN"],
+        seeds = [b"TOKEN", TREASURY_SEED],
         bump,
         payer = signer,
         token::mint = token_mint,
@@ -1137,7 +1139,7 @@ pub struct AnteBlackJack<'info> {
 
     #[account(
         mut,
-        seeds = [b"TOKEN"],
+        seeds = [b"TOKEN", TREASURY_SEED],
         bump,
     )]
     pub token_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
@@ -1189,7 +1191,7 @@ pub struct InsuranceBlackJack<'info> {
 
     #[account(
         mut,
-        seeds = [b"TOKEN"],
+        seeds = [b"TOKEN", TREASURY_SEED],
         bump,
     )]
     pub token_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
@@ -1255,7 +1257,7 @@ pub struct SplitBlackJack<'info> {
 
     #[account(
         mut,
-        seeds = [b"TOKEN"],
+        seeds = [b"TOKEN", TREASURY_SEED],
         bump,
     )]
     pub token_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
@@ -1354,7 +1356,7 @@ pub struct FinishGame<'info> {
 
     #[account(
         mut,
-        seeds = [b"TOKEN"],
+        seeds = [b"TOKEN", TREASURY_SEED],
         bump,
     )]
     pub token_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
@@ -1515,3 +1517,4 @@ pub struct Deck2 {
     pub drawn: u8,            // Number of cards already drawn (0 initially)
 }
 */
+
